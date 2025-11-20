@@ -35,4 +35,4 @@ Config.Whitelist = {
 }
 
 -- Optional debug prints in server console
-Config.Debug = false
+Config.Debug = true
