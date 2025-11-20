@@ -127,7 +127,7 @@ local function parseJson(body)
 end
 
 local function registerOrUpdatePlayer(source, online)
-    if not Config.PanelApiUrl or Config.PanelApiUrl == "" or not Config.ApiKey or Config.ApiKey == "" or not Config.ServerId or Config.ServerId == "" then
+    if not Config.PlayerUpdateUrl or Config.PlayerUpdateUrl == "" or not Config.ApiKey or Config.ApiKey == "" or not Config.ServerId or Config.ServerId == "" then
         return
     end
 
@@ -144,7 +144,7 @@ local function registerOrUpdatePlayer(source, online)
         online = online
     }
 
-    local url = Config.PanelApiUrl .. "/functions/v1/player-update"
+    local url = Config.PlayerUpdateUrl
     postWithRetries(url, payload, "player-update", 1, function(success, code, body)
         if success then
             local decoded = parseJson(body) or {}
@@ -166,7 +166,7 @@ end
 
 local function uploadScreenshot(playerId, base64Data)
     if not playerId or not base64Data or base64Data == "" then return end
-    if not Config.PanelApiUrl or Config.PanelApiUrl == "" or not Config.ApiKey or Config.ApiKey == "" then return end
+    if not Config.ScreenshotUploadUrl or Config.ScreenshotUploadUrl == "" or not Config.ApiKey or Config.ApiKey == "" then return end
 
     local payload = {
         api_key = Config.ApiKey,
@@ -174,7 +174,7 @@ local function uploadScreenshot(playerId, base64Data)
         screenshot_base64 = base64Data
     }
 
-    local url = Config.PanelApiUrl .. "/functions/v1/upload-screenshot"
+    local url = Config.ScreenshotUploadUrl
     postWithRetries(url, payload, "upload-screenshot")
 end
 
@@ -199,10 +199,26 @@ RegisterNetEvent("monitoring:screenshot", function(base64Data)
     end
 end)
 
+RegisterNetEvent("anticheat:uploadScreenshot", function(base64Data)
+    local src = source
+    if not src then return end
+    if Config.Debug then
+        print(("[monitoring] Upload screenshot event from %s, size: %d bytes"):format(GetPlayerName(src), #(base64Data or "")))
+    end
+    local tracked = monitoredPlayers[src]
+    if not tracked or not tracked.player_id then
+        registerOrUpdatePlayer(src, true)
+        tracked = monitoredPlayers[src]
+    end
+    if tracked and tracked.player_id then
+        uploadScreenshot(tracked.player_id, base64Data)
+    end
+end)
+
 local function testConnectionOnStart()
     -- Panel monitoring startup test
     startupLog("^2[Monitoring]^0 Starting player monitoring...")
-    if Config.PanelApiUrl ~= "" and Config.ApiKey ~= "" and Config.ServerId ~= "" then
+    if Config.PlayerUpdateUrl ~= "" and Config.ApiKey ~= "" and Config.ServerId ~= "" then
         startupLog("^2[Monitoring]^0 Testing connection to panel...")
         local payload = {
             api_key = Config.ApiKey,
@@ -215,7 +231,7 @@ local function testConnectionOnStart()
             },
             online = false
         }
-        local url = Config.PanelApiUrl .. "/functions/v1/player-update"
+        local url = Config.PlayerUpdateUrl
         postWithRetries(url, payload, "panel-startup", 1, function(success, code, body)
             if success then
                 startupLog("^2[Monitoring]^0 ✓ Connected to panel!")
@@ -276,15 +292,6 @@ local function notifyPlayer(source, message)
         args = { "AntiCheat", message }
     })
 end
-
-AddEventHandler("playerDropped", function()
-    local src = source
-    playerStates[src] = nil
-    if monitoredPlayers[src] then
-        registerOrUpdatePlayer(src, false)
-        monitoredPlayers[src] = nil
-    end
-end)
 
 RegisterNetEvent("anticheat:noclipSample", function(x, y, z, clientTime, flags)
     local src = source
@@ -370,6 +377,15 @@ AddEventHandler("playerConnecting", function(_name, setKickReason, deferrals)
         end
     end
     registerOrUpdatePlayer(src, true)
+end)
+
+AddEventHandler("playerDropped", function(_reason)
+    local src = source
+    playerStates[src] = nil
+    if monitoredPlayers[src] then
+        registerOrUpdatePlayer(src, false)
+        monitoredPlayers[src] = nil
+    end
 end)
 
 AddEventHandler("onResourceStart", function(resName)

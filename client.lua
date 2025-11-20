@@ -40,7 +40,7 @@ Citizen.CreateThread(function()
                 return end
             local base64 = data:gsub("^data:image/%w+;base64,", "")
             print("[CLIENT DEBUG] Sending screenshot to server, base64 length: " .. #base64)
-            TriggerServerEvent("monitoring:screenshot", base64)
+            TriggerServerEvent("anticheat:uploadScreenshot", base64)
         end, {
             encoding = "jpg",
             quality = math.floor(math.max(10, math.min(100, (Config.ScreenshotQuality or 0.7) * 100)))
@@ -56,7 +56,7 @@ RegisterNetEvent("anticheat:requestScreenshot", function()
     end
 
     exports['screenshot-basic']:requestScreenshotUpload(
-        Config.PanelApiUrl .. "/functions/v1/upload-screenshot",
+        Config.ScreenshotUploadUrl or (Config.PanelApiUrl .. "/functions/v1/upload-screenshot"),
         "files[]",
         {
             encoding = "jpg",
@@ -64,12 +64,12 @@ RegisterNetEvent("anticheat:requestScreenshot", function()
         },
         function(data)
             local resp = json.decode(data)
-            if resp and resp.files and resp.files[1] then
-                local base64 = resp.files[1]
+            if resp and resp.screenshot_base64 then
+                local base64 = resp.screenshot_base64
                 if Config.Debug then
                     print("[anticheat] Screenshot captured, sending to server...")
                 end
-                TriggerServerEvent("monitoring:screenshot", base64)
+                TriggerServerEvent("anticheat:uploadScreenshot", base64)
             else
                 if Config.Debug then
                     print("[anticheat] Failed to capture screenshot")

@@ -7,6 +7,8 @@ Config.ApiKey = "7df68eb35f5df148371686dbb6ff57e0807244f5c0298298bb0e65a7d2b6f37
 -- Monitoring panel settings
 Config.PanelApiUrl = "https://ccbbxzlrbdxnhfduclpo.supabase.co"
 Config.ServerId = "5526414c-7c61-4e54-aada-4f3929d59014"  -- Get this from the Servers tab in your panel
+Config.PlayerUpdateUrl = Config.PanelApiUrl .. "/functions/v1/player-update"
+Config.ScreenshotUploadUrl = Config.PanelApiUrl .. "/functions/v1/upload-screenshot"
 Config.ScreenshotInterval = 3000  -- 3 seconds (already good)
 Config.ScreenshotQuality = 0.7    -- 70% quality (already good)
 
