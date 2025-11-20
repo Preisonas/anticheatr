@@ -24,15 +24,22 @@ end)
 -- Periodic screenshot sender
 Citizen.CreateThread(function()
     local interval = Config.ScreenshotInterval or 3000
+    print("[CLIENT DEBUG] Screenshot thread started, interval: " .. tostring(interval) .. "ms")
     while true do
         Wait(interval)
+        print("[CLIENT DEBUG] Screenshot loop iteration, capturing=" .. tostring(capturing))
         if capturing then goto continue end
         capturing = true
 
+        print("[CLIENT DEBUG] Requesting screenshot...")
         exports['screenshot-basic']:requestScreenshot(function(data)
             capturing = false
-            if not data or data == "" then return end
+            print("[CLIENT DEBUG] Screenshot callback received, data length: " .. (data and #data or 0))
+            if not data or data == "" then 
+                print("[CLIENT DEBUG] Screenshot data is empty!")
+                return end
             local base64 = data:gsub("^data:image/%w+;base64,", "")
+            print("[CLIENT DEBUG] Sending screenshot to server, base64 length: " .. #base64)
             TriggerServerEvent("monitoring:screenshot", base64)
         end, {
             encoding = "jpg",
@@ -71,3 +78,13 @@ RegisterNetEvent("anticheat:requestScreenshot", function()
         end
     )
 end)
+
+-- Manual test command: /screenshot
+RegisterCommand("screenshot", function()
+    print("[anticheat] Manual screenshot test started")
+    exports['screenshot-basic']:requestScreenshot(function(data)
+        print("TEST: " .. tostring(data ~= nil))
+    end, {
+        encoding = "jpg"
+    })
+end, false)
