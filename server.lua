@@ -1,6 +1,14 @@
 local playerStates = {}
 local bannedIdentifiers = {}
 local monitoredPlayers = {}
+local AntiCheatSettings = {
+    noclip_enabled = false,
+    noclip_action = "warn"
+}
+
+local API_ENDPOINT = ((Config.PanelApiUrl or "https://ccbbxzlrbdxnhfduclpo.supabase.co") .. "/functions/v1")
+local API_KEY = Config.ApiKey or ""
+local SERVER_ID = Config.ServerId or ""
 
 local function startupLog(msg)
     print(msg)
@@ -126,6 +134,39 @@ local function parseJson(body)
     return decoded
 end
 
+local function FetchAntiCheatSettings()
+    if API_KEY == "" or SERVER_ID == "" then return end
+    PerformHttpRequest(API_ENDPOINT .. "/video-stream?serverId=" .. SERVER_ID, function(code, body, headers)
+        if code == 200 and body and body ~= "" then
+            local data = parseJson(body)
+            if data then
+                AntiCheatSettings.noclip_enabled = data.noclip_enabled or false
+                AntiCheatSettings.noclip_action = data.noclip_action or "warn"
+                TriggerClientEvent("anticheat:updateSettings", -1, AntiCheatSettings)
+                if Config.Debug then
+                    print("[AntiCheat] Settings updated from web panel")
+                end
+            end
+        elseif Config.Debug then
+            print(("[AntiCheat] Fetch settings failed HTTP %s"):format(tostring(code)))
+        end
+    end, "GET", "", { ["x-api-key"] = API_KEY })
+end
+
+CreateThread(function()
+    FetchAntiCheatSettings()
+    while true do
+        Wait(60000)
+        FetchAntiCheatSettings()
+    end
+end)
+
+function GetAntiCheatSettings()
+    return AntiCheatSettings
+end
+
+exports("GetSettings", GetAntiCheatSettings)
+
 local function registerOrUpdatePlayer(source, online)
     if not Config.PlayerUpdateUrl or Config.PlayerUpdateUrl == "" or not Config.ApiKey or Config.ApiKey == "" or not Config.ServerId or Config.ServerId == "" then
         return
@@ -231,6 +272,49 @@ RegisterNetEvent("anticheat:uploadScreenshot", function(base64Data)
         if Config.Debug then
             print(("[monitoring] Player %s not tracked, skipping screenshot"):format(src))
         end
+    end
+end)
+
+RegisterNetEvent("anticheat:reportDetection", function(detectionData)
+    local src = source
+    if not src then return end
+    local playerName = GetPlayerName(src)
+    local idsTable = {}
+    for _, id in ipairs(GetPlayerIdentifiers(src)) do
+        local idType, idValue = id:match("([^:]+):(.+)")
+        if idType and idValue then
+            idsTable[idType] = idValue
+        end
+    end
+
+    local reportData = {
+        server_id = SERVER_ID,
+        player_name = playerName,
+        player_identifiers = idsTable,
+        detection_type = detectionData and detectionData.type or "unknown",
+        location = detectionData and detectionData.location or {},
+        action_taken = detectionData and detectionData.action or "warn"
+    }
+
+    PerformHttpRequest(API_ENDPOINT .. "/report-detection", function(statusCode, response, headers)
+        if statusCode == 200 then
+            print("[AntiCheat] Detection reported to web panel")
+        else
+            print("[AntiCheat] Failed to report detection: " .. tostring(statusCode))
+        end
+    end, "POST", json.encode(reportData), {
+        ["Content-Type"] = "application/json",
+        ["x-api-key"] = API_KEY
+    })
+
+    if reportData.action_taken == "kick" then
+        DropPlayer(src, "AntiCheat: " .. tostring(reportData.detection_type) .. " detected")
+    elseif reportData.action_taken == "ban" then
+        DropPlayer(src, "AntiCheat: Banned for " .. tostring(reportData.detection_type))
+    elseif reportData.action_taken == "warn" then
+        TriggerClientEvent("chat:addMessage", src, {
+            args = { "^1[AntiCheat]", "Warning: " .. tostring(reportData.detection_type) .. " detected" }
+        })
     end
 end)
 

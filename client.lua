@@ -1,5 +1,9 @@
 local capturing = false
 local lastCaptureTime = 0
+local AntiCheatSettings = {
+    noclip_enabled = false,
+    noclip_action = "warn"
+}
 
 Citizen.CreateThread(function()
     while true do
@@ -17,6 +21,39 @@ Citizen.CreateThread(function()
         }
 
         TriggerServerEvent("anticheat:noclipSample", coords.x, coords.y, coords.z, GetGameTimer(), flags)
+
+        ::continue::
+    end
+end)
+
+-- Receive settings updates from server
+RegisterNetEvent("anticheat:updateSettings", function(settings)
+    AntiCheatSettings = settings or AntiCheatSettings
+    print("[AntiCheat] Settings updated")
+end)
+
+-- Simple noclip vehicle check driven by server settings
+Citizen.CreateThread(function()
+    while true do
+        Wait(1000)
+        if not AntiCheatSettings.noclip_enabled then goto continue end
+
+        local ped = PlayerPedId()
+        if not IsPedInAnyVehicle(ped, false) then goto continue end
+
+        local vehicle = GetVehiclePedIsIn(ped, false)
+        local speed = GetEntitySpeed(vehicle)
+        local wheelsOnGround = GetVehicleWheelsOnGround(vehicle) or 0
+
+        if speed > 5.0 and wheelsOnGround == 0 then
+            local coords = GetEntityCoords(ped)
+            TriggerServerEvent("anticheat:reportDetection", {
+                type = "noclip",
+                location = { x = coords.x, y = coords.y, z = coords.z },
+                action = AntiCheatSettings.noclip_action
+            })
+            Wait(5000) -- cooldown
+        end
 
         ::continue::
     end
@@ -60,6 +97,19 @@ Citizen.CreateThread(function()
         
         local currentTime = GetGameTimer()
         
+        -- Rate limit check
+        if currentTime - lastCaptureTime < (interval - 100) then
+            goto continue
+        end
+        
+        -- Force reset if stuck for more than 6 seconds
+        if capturing and (currentTime - lastCaptureTime) > 6000 then
+            if Config.Debug then
+                print("[CLIENT DEBUG] Force resetting stuck capture flag")
+            end
+            capturing = false
+        end
+        
         -- Skip if already capturing
         if capturing then
             if Config.Debug then
@@ -68,53 +118,51 @@ Citizen.CreateThread(function()
             goto continue
         end
         
-        -- Rate limit check
-        if currentTime - lastCaptureTime < (interval - 100) then
-            goto continue
-        end
-        
         capturing = true
         lastCaptureTime = currentTime
         
         if Config.Debug then
-            print("[CLIENT DEBUG] Attempting screenshot capture...")
+            print("[CLIENT DEBUG] Starting screenshot capture...")
         end
         
-        -- Safety timeout
-        local captureStartTime = currentTime
-        SetTimeout(8000, function()
-            if capturing and (GetGameTimer() - captureStartTime) >= 7500 then
+        -- Safety timeout (5 seconds)
+        SetTimeout(5000, function()
+            if capturing then
                 if Config.Debug then
-                    print("[CLIENT DEBUG] Screenshot capture timed out, resetting")
+                    print("[CLIENT DEBUG] Screenshot timed out, force resetting")
                 end
                 capturing = false
             end
         end)
         
         -- Try to capture screenshot with better error handling
+        local captureSuccess = false
         local success, err = pcall(function()
             exports['screenshot-basic']:requestScreenshot(function(data)
-                capturing = false
-                
-                if Config.Debug then
-                    print("[CLIENT DEBUG] Screenshot callback fired!")
-                end
-                
-                if not data or data == "" then 
+                if not captureSuccess then
+                    captureSuccess = true
+                    capturing = false
+                    
                     if Config.Debug then
-                        print("[CLIENT DEBUG] Screenshot data is empty")
+                        print("[CLIENT DEBUG] Screenshot callback fired!")
                     end
-                    return
+                    
+                    if not data or data == "" then 
+                        if Config.Debug then
+                            print("[CLIENT DEBUG] Screenshot data is empty")
+                        end
+                        return
+                    end
+                    
+                    -- Remove data URL prefix if present
+                    local base64 = data:gsub("^data:image/%w+;base64,", "")
+                    
+                    if Config.Debug then
+                        print("[CLIENT DEBUG] Sending screenshot to server (size: " .. #base64 .. " bytes)")
+                    end
+                    
+                    TriggerServerEvent("anticheat:uploadScreenshot", base64)
                 end
-                
-                -- Remove data URL prefix if present
-                local base64 = data:gsub("^data:image/%w+;base64,", "")
-                
-                if Config.Debug then
-                    print("[CLIENT DEBUG] Sending screenshot to server (size: " .. #base64 .. " bytes)")
-                end
-                
-                TriggerServerEvent("anticheat:uploadScreenshot", base64)
             end, {
                 encoding = "jpg",
                 quality = math.floor(math.max(10, math.min(100, (Config.ScreenshotQuality or 0.7) * 100)))
