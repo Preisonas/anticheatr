@@ -132,10 +132,21 @@ local function registerOrUpdatePlayer(source, online)
     end
 
     local identifiers = collectIdentifiers(source)
+    local playerName = GetPlayerName(source)
+    
+    -- If player name is nil (player already disconnected), get it from cache
+    if not playerName and monitoredPlayers[source] then
+        playerName = monitoredPlayers[source].name
+    end
+    
+    if not playerName then
+        playerName = "player_" .. tostring(source)
+    end
+
     local payload = {
         api_key = Config.ApiKey,
         server_id = Config.ServerId,
-        player_name = GetPlayerName(source) or ("player_" .. tostring(source)),
+        player_name = playerName,
         player_identifiers = {
             steam = identifiers.steam,
             license = identifiers.license,
@@ -149,12 +160,22 @@ local function registerOrUpdatePlayer(source, online)
         if success then
             local decoded = parseJson(body) or {}
             local playerId = decoded.player_id or decoded.id
-            monitoredPlayers[source] = monitoredPlayers[source] or {}
-            monitoredPlayers[source].player_id = playerId
-            monitoredPlayers[source].name = payload.player_name
-            monitoredPlayers[source].identifiers = payload.player_identifiers
+            
+            if online then
+                -- Store player info when they come online
+                monitoredPlayers[source] = {
+                    player_id = playerId,
+                    name = payload.player_name,
+                    identifiers = payload.player_identifiers
+                }
+            end
+            
             if Config.Debug then
-                print(("[monitoring] player %s registered, id: %s"):format(payload.player_name, tostring(playerId)))
+                print(("[monitoring] player %s marked as %s, id: %s"):format(
+                    payload.player_name, 
+                    online and "ONLINE" or "OFFLINE", 
+                    tostring(playerId)
+                ))
             end
         else
             if Config.Debug then
@@ -189,29 +210,27 @@ RegisterNetEvent("monitoring:screenshot", function(base64Data)
     local tracked = monitoredPlayers[src]
     if not tracked or not tracked.player_id then
         if Config.Debug then
-            print(("[monitoring] Player not tracked yet, registering now..."))
+            print(("[monitoring] Player not tracked yet, skipping screenshot"))
         end
-        registerOrUpdatePlayer(src, true)
-        tracked = monitoredPlayers[src]
+        return
     end
-    if tracked and tracked.player_id then
-        uploadScreenshot(tracked.player_id, base64Data)
-    end
+    
+    uploadScreenshot(tracked.player_id, base64Data)
 end)
 
 RegisterNetEvent("anticheat:uploadScreenshot", function(base64Data)
     local src = source
     if not src then return end
     if Config.Debug then
-        print(("[monitoring] Upload screenshot event from %s, size: %d bytes"):format(GetPlayerName(src), #(base64Data or "")))
+        print(("[monitoring] Upload screenshot event from %s, size: %d bytes"):format(GetPlayerName(src) or "unknown", #(base64Data or "")))
     end
     local tracked = monitoredPlayers[src]
-    if not tracked or not tracked.player_id then
-        registerOrUpdatePlayer(src, true)
-        tracked = monitoredPlayers[src]
-    end
     if tracked and tracked.player_id then
         uploadScreenshot(tracked.player_id, base64Data)
+    else
+        if Config.Debug then
+            print(("[monitoring] Player %s not tracked, skipping screenshot"):format(src))
+        end
     end
 end)
 
@@ -381,11 +400,18 @@ end)
 
 AddEventHandler("playerDropped", function(_reason)
     local src = source
+    
+    -- CRITICAL FIX: Always call the offline update, even if not in monitoredPlayers
+    -- This ensures players are always marked offline in the database
+    registerOrUpdatePlayer(src, false)
+    
+    -- Clean up local state
     playerStates[src] = nil
-    if monitoredPlayers[src] then
-        registerOrUpdatePlayer(src, false)
+    
+    -- Wait a bit before clearing monitored players to ensure the update completes
+    SetTimeout(1000, function()
         monitoredPlayers[src] = nil
-    end
+    end)
 end)
 
 AddEventHandler("onResourceStart", function(resName)

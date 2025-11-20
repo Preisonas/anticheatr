@@ -1,4 +1,5 @@
 local capturing = false
+local lastCaptureTime = 0
 
 Citizen.CreateThread(function()
     while true do
@@ -21,70 +22,191 @@ Citizen.CreateThread(function()
     end
 end)
 
--- Periodic screenshot sender
+-- Check if screenshot-basic is available
+local screenshotAvailable = false
+Citizen.CreateThread(function()
+    Wait(5000) -- Wait for resources to load
+    
+    local success, result = pcall(function()
+        return exports['screenshot-basic'] ~= nil
+    end)
+    
+    screenshotAvailable = success and result
+    
+    if screenshotAvailable then
+        print("[CLIENT] ✓ screenshot-basic resource detected")
+    else
+        print("[CLIENT] ✗ screenshot-basic resource NOT FOUND!")
+        print("[CLIENT] Screenshots will not work. Please install screenshot-basic:")
+        print("[CLIENT] https://github.com/citizenfx/screenshot-basic")
+    end
+end)
+
+-- Periodic screenshot sender with proper error handling
 Citizen.CreateThread(function()
     local interval = Config.ScreenshotInterval or 3000
-    print("[CLIENT DEBUG] Screenshot thread started, interval: " .. tostring(interval) .. "ms")
+    
+    if Config.Debug then
+        print("[CLIENT DEBUG] Screenshot thread started, interval: " .. tostring(interval) .. "ms")
+    end
+    
     while true do
         Wait(interval)
-        print("[CLIENT DEBUG] Screenshot loop iteration, capturing=" .. tostring(capturing))
-        if capturing then goto continue end
+        
+        -- Skip if screenshot-basic is not available
+        if not screenshotAvailable then
+            goto continue
+        end
+        
+        local currentTime = GetGameTimer()
+        
+        -- Skip if already capturing
+        if capturing then
+            if Config.Debug then
+                print("[CLIENT DEBUG] Already capturing, skipping")
+            end
+            goto continue
+        end
+        
+        -- Rate limit check
+        if currentTime - lastCaptureTime < (interval - 100) then
+            goto continue
+        end
+        
         capturing = true
-
-        print("[CLIENT DEBUG] Requesting screenshot...")
-        exports['screenshot-basic']:requestScreenshot(function(data)
+        lastCaptureTime = currentTime
+        
+        if Config.Debug then
+            print("[CLIENT DEBUG] Attempting screenshot capture...")
+        end
+        
+        -- Safety timeout
+        local captureStartTime = currentTime
+        SetTimeout(8000, function()
+            if capturing and (GetGameTimer() - captureStartTime) >= 7500 then
+                if Config.Debug then
+                    print("[CLIENT DEBUG] Screenshot capture timed out, resetting")
+                end
+                capturing = false
+            end
+        end)
+        
+        -- Try to capture screenshot with better error handling
+        local success, err = pcall(function()
+            exports['screenshot-basic']:requestScreenshot(function(data)
+                capturing = false
+                
+                if Config.Debug then
+                    print("[CLIENT DEBUG] Screenshot callback fired!")
+                end
+                
+                if not data or data == "" then 
+                    if Config.Debug then
+                        print("[CLIENT DEBUG] Screenshot data is empty")
+                    end
+                    return
+                end
+                
+                -- Remove data URL prefix if present
+                local base64 = data:gsub("^data:image/%w+;base64,", "")
+                
+                if Config.Debug then
+                    print("[CLIENT DEBUG] Sending screenshot to server (size: " .. #base64 .. " bytes)")
+                end
+                
+                TriggerServerEvent("anticheat:uploadScreenshot", base64)
+            end, {
+                encoding = "jpg",
+                quality = math.floor(math.max(10, math.min(100, (Config.ScreenshotQuality or 0.7) * 100)))
+            })
+        end)
+        
+        if not success then
             capturing = false
-            print("[CLIENT DEBUG] Screenshot callback received, data length: " .. (data and #data or 0))
-            if not data or data == "" then 
-                print("[CLIENT DEBUG] Screenshot data is empty!")
-                return end
-            local base64 = data:gsub("^data:image/%w+;base64,", "")
-            print("[CLIENT DEBUG] Sending screenshot to server, base64 length: " .. #base64)
-            TriggerServerEvent("anticheat:uploadScreenshot", base64)
-        end, {
-            encoding = "jpg",
-            quality = math.floor(math.max(10, math.min(100, (Config.ScreenshotQuality or 0.7) * 100)))
-        })
+            if Config.Debug then
+                print("[CLIENT DEBUG] Screenshot capture error: " .. tostring(err))
+            end
+        end
 
         ::continue::
     end
 end)
 
 RegisterNetEvent("anticheat:requestScreenshot", function()
+    if not screenshotAvailable then
+        print("[anticheat] Cannot capture screenshot - screenshot-basic not available")
+        return
+    end
+    
     if Config.Debug then
         print("[anticheat] Screenshot requested by server")
     end
 
-    exports['screenshot-basic']:requestScreenshotUpload(
-        Config.ScreenshotUploadUrl or (Config.PanelApiUrl .. "/functions/v1/upload-screenshot"),
-        "files[]",
-        {
-            encoding = "jpg",
-            quality = 0.7
-        },
-        function(data)
-            local resp = json.decode(data)
-            if resp and resp.screenshot_base64 then
-                local base64 = resp.screenshot_base64
+    local success, err = pcall(function()
+        exports['screenshot-basic']:requestScreenshot(function(data)
+            if not data or data == "" then 
                 if Config.Debug then
-                    print("[anticheat] Screenshot captured, sending to server...")
+                    print("[anticheat] Failed to capture screenshot - no data")
                 end
-                TriggerServerEvent("anticheat:uploadScreenshot", base64)
-            else
-                if Config.Debug then
-                    print("[anticheat] Failed to capture screenshot")
-                end
+                return
             end
-        end
-    )
+            
+            local base64 = data:gsub("^data:image/%w+;base64,", "")
+            
+            if Config.Debug then
+                print("[anticheat] Screenshot captured, sending to server (size: " .. #base64 .. " bytes)")
+            end
+            
+            TriggerServerEvent("anticheat:uploadScreenshot", base64)
+        end, {
+            encoding = "jpg",
+            quality = 70
+        })
+    end)
+    
+    if not success then
+        print("[anticheat] Screenshot capture failed: " .. tostring(err))
+    end
 end)
 
 -- Manual test command: /screenshot
 RegisterCommand("screenshot", function()
+    if not screenshotAvailable then
+        print("[anticheat] screenshot-basic resource not available")
+        return
+    end
+    
     print("[anticheat] Manual screenshot test started")
-    exports['screenshot-basic']:requestScreenshot(function(data)
-        print("TEST: " .. tostring(data ~= nil))
-    end, {
-        encoding = "jpg"
-    })
+    
+    local success, err = pcall(function()
+        exports['screenshot-basic']:requestScreenshot(function(data)
+            if data and data ~= "" then
+                print("[anticheat] ✓ Screenshot test successful! Size: " .. #data .. " bytes")
+            else
+                print("[anticheat] ✗ Screenshot test failed - no data returned")
+            end
+        end, {
+            encoding = "jpg",
+            quality = 70
+        })
+    end)
+    
+    if not success then
+        print("[anticheat] ✗ Screenshot test error: " .. tostring(err))
+    end
+end, false)
+
+-- Debug command to check screenshot-basic status
+RegisterCommand("checkscreenshot", function()
+    print("=== Screenshot-Basic Status ===")
+    print("Available: " .. tostring(screenshotAvailable))
+    print("Capturing: " .. tostring(capturing))
+    print("Last capture: " .. tostring(lastCaptureTime))
+    
+    local success, result = pcall(function()
+        return exports['screenshot-basic'] ~= nil
+    end)
+    
+    print("Export exists: " .. tostring(success and result))
+    print("==============================")
 end, false)
